@@ -1,7 +1,10 @@
 # Environment variables and secrets
 .env
 config.json
+
+# Project-specific stuff
 images/
+bsky_account_setup.txt
 
 # Python
 __pycache__/
