@@ -1,191 +1,165 @@
-#!/usr/bin/env python3
-import email
-import imaplib
-import json
+import base64
+import html2text
 import os
+import pickle
 import re
-import time
-from atproto import Client, models
-from dotenv import load_dotenv
+from bluesky_post import post_to_bluesky
+from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
 
-PROCESSED_FILE = 'processed_emails.txt'
+#  @@@@@@@   @@@@@@   @@@  @@@   @@@@@@   @@@@@@@   @@@@@@   @@@  @@@  @@@@@@@   @@@@@@   
+# @@@@@@@@  @@@@@@@@  @@@@ @@@  @@@@@@@   @@@@@@@  @@@@@@@@  @@@@ @@@  @@@@@@@  @@@@@@@   
+# !@@       @@!  @@@  @@!@!@@@  !@@         @@!    @@!  @@@  @@!@!@@@    @@!    !@@       
+# !@!       !@!  @!@  !@!!@!@!  !@!         !@!    !@!  @!@  !@!!@!@!    !@!    !@!       
+# !@!       @!@  !@!  @!@ !!@!  !!@@!!      @!!    @!@!@!@!  @!@ !!@!    @!!    !!@@!!    
+# !!!       !@!  !!!  !@!  !!!   !!@!!!     !!!    !!!@!!!!  !@!  !!!    !!!     !!@!!!   
+# :!!       !!:  !!!  !!:  !!!       !:!    !!:    !!:  !!!  !!:  !!!    !!:         !:!  
+# :!:       :!:  !:!  :!:  !:!      !:!     :!:    :!:  !:!  :!:  !:!    :!:        !:!   
+#  ::: :::  ::::: ::   ::   ::  :::: ::      ::    ::   :::   ::   ::     ::    :::: ::   
+#  :: :: :   : :  :   ::    :   :: : :       :      :   : :  ::    :      :     :: : :                                                                                        
 
-def save_emails_to_file(emails, filename='emails_cache.json'):
-    """Save email data to a JSON file for offline testing"""
-    with open(filename, 'w') as f:
-        json.dump(emails, f, indent=2)
-    print(f"✓ Saved {len(emails)} emails to {filename}")
+SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 
-def load_emails_from_file(filename='emails_cache.json'):
-    """Load email data from JSON file"""
-    if os.path.exists(filename):
-        with open(filename, 'r') as f:
-            return json.load(f)
-    return []
+# @@@@@@@@  @@@  @@@  @@@  @@@   @@@@@@@  @@@@@@@  @@@   @@@@@@   @@@  @@@                      
+# @@@@@@@@  @@@  @@@  @@@@ @@@  @@@@@@@@  @@@@@@@  @@@  @@@@@@@@  @@@@ @@@                      
+# @@!       @@!  @@@  @@!@!@@@  !@@         @@!    @@!  @@!  @@@  @@!@!@@@                      
+# !@!       !@!  @!@  !@!!@!@!  !@!         !@!    !@!  !@!  @!@  !@!!@!@!                      
+# @!!!:!    @!@  !@!  @!@ !!@!  !@!         @!!    !!@  @!@  !@!  @!@ !!@!                      
+# !!!!!:    !@!  !!!  !@!  !!!  !!!         !!!    !!!  !@!  !!!  !@!  !!!                      
+# !!:       !!:  !!!  !!:  !!!  :!!         !!:    !!:  !!:  !!!  !!:  !!!                      
+# :!:       :!:  !:!  :!:  !:!  :!:         :!:    :!:  :!:  !:!  :!:  !:!                      
+#  ::       ::::: ::   ::   ::   ::: :::     ::     ::  ::::: ::   ::   ::                      
+#  :         : :  :   ::    :    :: :: :     :     :     : :  :   ::    :                       
 
-def load_processed_ids():
-    """Load the set of already processed email IDs"""
-    if os.path.exists(PROCESSED_FILE):
-        with open(PROCESSED_FILE,'r') as f:
-            return set(line.strip() for line in f)
-    return set()
+# @@@@@@@   @@@@@@@@  @@@@@@@@  @@@  @@@  @@@  @@@  @@@@@@@  @@@   @@@@@@   @@@  @@@   @@@@@@   
+# @@@@@@@@  @@@@@@@@  @@@@@@@@  @@@  @@@@ @@@  @@@  @@@@@@@  @@@  @@@@@@@@  @@@@ @@@  @@@@@@@   
+# @@!  @@@  @@!       @@!       @@!  @@!@!@@@  @@!    @@!    @@!  @@!  @@@  @@!@!@@@  !@@       
+# !@!  @!@  !@!       !@!       !@!  !@!!@!@!  !@!    !@!    !@!  !@!  @!@  !@!!@!@!  !@!       
+# @!@  !@!  @!!!:!    @!!!:!    !!@  @!@ !!@!  !!@    @!!    !!@  @!@  !@!  @!@ !!@!  !!@@!!    
+# !@!  !!!  !!!!!:    !!!!!:    !!!  !@!  !!!  !!!    !!!    !!!  !@!  !!!  !@!  !!!   !!@!!!   
+# !!:  !!!  !!:       !!:       !!:  !!:  !!!  !!:    !!:    !!:  !!:  !!!  !!:  !!!       !:!  
+# :!:  !:!  :!:       :!:       :!:  :!:  !:!  :!:    :!:    :!:  :!:  !:!  :!:  !:!      !:!   
+#  :::: ::   :: ::::   ::        ::   ::   ::   ::     ::     ::  ::::: ::   ::   ::  :::: ::   
+# :: :  :   : :: ::    :        :    ::    :   :       :     :     : :  :   ::    :   :: : :    
+
+def fetch_messages_by_label(service, label: str):
+    """
+    Get messages with a certain label. 
     
-def save_processed_id(email_id):
-    """Save an email ID as processed"""
-    with open(PROCESSED_FILE, 'a') as f:
-        f.write(f"{email_id}\n")
+    :param label: email label (e.g., INBOX)
+    :type label: str
+    """
+    results = service.users().messages().list(userId='me', labelIds=[label]).execute()
+    messages = results.get('messages', [])
+    return messages
 
-def clean_email_text(text):
-    """Remove HTML artifacts and clean up email text"""
-    # Remove image references like ![Alt text][1]
-    text = re.sub(r'!\[.*?\]\[\d+\]', '', text)
-    # Remove link references like [1]: url
-    text = re.sub(r'\[\d+\]:\s*https?://\S+', '', text)
-    # Remove multiple blank lines
-    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-    # Remove leading/trailing whitespace
-    text = text.strip()
-    return text
+def load_alias_mappings(env_path: str = ".env") -> dict:
+    alias_dict = {}
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("ALIAS_") and "=" in line:
+                key, value = line.split("=", 1)
+                parts = value.split("|")
+                if len(parts) == 3:
+                    email_alias, bluesky_handle, bluesky_password = parts
+                    alias_dict[email_alias] = {
+                        "handle": bluesky_handle,
+                        "password": bluesky_password
+                    }
+    return alias_dict
 
-def load_alias_mappings():
-    """Load all ALIAS_* mappings from .env"""
-    mappings = {}
-    for key, value in os.environ.items():
-        if key.startswith('ALIAS_'):
-            try:
-                alias_email, bsky_handle, bsky_password = value.split('|')
-                mappings[alias_email.lower()] = {
-                    'handle': bsky_handle,
-                    'password': bsky_password,
-                    'org_name': key.replace('ALIAS_', '')
-                }
-            except ValueError:
-                print(f"Warning: Invalid format for {key}")
-    return mappings
+def extract_all_text_parts(payload, recipient, parts=None):
+    if parts is None:
+        parts = []
+    if 'parts' in payload:
+        for part in payload['parts']:
+            print(f"extracting {payload.get('mimeType')} payload, calling recursively...")
+            extract_all_text_parts(part, recipient, parts)
+    elif payload.get('mimeType') == 'text/plain':
+        print(f"extracting {payload.get('mimeType')} payload, returning...")
+        data = payload['body'].get('data', '')
+        if data:
+            parts.append(base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore'))
+    elif payload.get('mimeType') == 'text/html':
+        data = payload['body'].get('data', '')
+        print(f"extracting {payload.get('mimeType')} payload, returning...")
+        if data:
+            html_body = base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+            html_body = remove_hidden_blocks(html_body)
+            html_body = html_body.replace(recipient, '[open mail project]')
+            h = html2text.HTML2Text()
+            h.ignore_links = True
+            h.ignore_images = True
+            h.body_width = 0
+            parts.append(h.handle(html_body))
+    return parts
 
-# Get the alias mappings from .env, the emails will be checked against these
-alias_mappings = load_alias_mappings()
-
-EMAIL_SERVER = os.getenv('EMAIL_SERVER')
-EMAIL_PORT = os.getenv('EMAIL_PORT')
-EMAIL_USERNAME = os.getenv('EMAIL_USERNAME')
-EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')
-
-print("Connecting to Gmail...")
-mail = imaplib.IMAP4_SSL(EMAIL_SERVER, EMAIL_PORT)
-mail.login(EMAIL_USERNAME, EMAIL_PASSWORD)
-print("✓ Connected successfully!")
-
-# Select inbox
-mail.select('INBOX')
-
-# Search for all emails
-status, messages = mail.search(None, 'ALL')
-email_ids = messages[0].split()
-
-print(f"Found {len(email_ids)} emails in inbox")
-
-#Show the last 3 email IDs
-print(f"Last 3 email IDs: {email_ids[-3:]}")
-
-processed_ids = load_processed_ids()
-
-# Fetch and display email details
-for email_id in email_ids[-5:]:
-    email_id_str = email_id.decode()
-
-    # Skip if already processed
-    if email_id_str in processed_ids:
-        print(f"\n--- Email {email_id_str} ---")
-        print("→ Already processed, skipping")
-        continue
-
-    status, msg_data = mail.fetch(email_id, '(RFC822)')
-    raw_email = msg_data[0][1]
-    msg = email.message_from_bytes(raw_email)
-
-    subject = msg['Subject']
-    to_addr = msg['To']
-    from_addr = msg['From']
-
-    print(f"\n--- Email {email_id_str} ---")
-    print(f"To: {to_addr}")
-    print(f"From: {from_addr}")
-    print(f"Subject: {subject}")
-
-    # Check if this email matches any configured alias
-    matched_alias = None
-    for alias_email, config in alias_mappings.items():
-        if alias_email in to_addr.lower():
-            matched_alias = (alias_email, config)
-            break
-
-    # If email is a match, post it!
-    if matched_alias:
-        alias_email, config = matched_alias
-        print(f"→ This is a {config['org_name']} email!")
-
-        # Extract body text
-        if msg.is_multipart():
-            for part in msg.walk():
-                if part.get_content_type() == "text/plain":
-                    body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                    body = clean_email_text(body)
-                    print(f"Body preview: {body[:200]}...")
-                    break
+def get_gmail_service():
+    creds = None
+    if os.path.exists('token.pickle'):
+        with open('token.pickle', 'rb') as token:
+            creds = pickle.load(token)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
         else:
-            body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
-            body = clean_email_text(body)
-            print(f"Body preview: {body[:200]}...")
+            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open('token.pickle', 'wb') as token:
+            pickle.dump(creds, token)
+    return build('gmail', 'v1', credentials=creds)
 
-        # Post to Bluesky using config['handle'] and config['password']
-        client = Client()
-        client.login(config['handle'], config['password'])
+def get_recipient(full_message: dict) -> str:
+    for header in full_message['payload']['headers']:
+        if header['name'].lower() == 'to':
+            return header['value']
+    return ''
 
-        print("Posting to Bluesky...")
-        post_header = f"📧 From: {from_addr}\nSubject: {subject}\n\n"
-        full_text = post_header + body
+def get_sender(full_message: dict) -> str:
+    for header in full_message['payload']['headers']:
+        if header['name'].lower() == 'from':
+            return header['value']
+    return ''
 
-        # Split into chunks (Bluesky allows ~300 chars)
-        max_chunk = 280
-        chunks = []
-        start = 0
+def get_subject(full_message: dict) -> str:
+    for header in full_message['payload']['headers']:
+        if header['name'].lower() == 'subject':
+            return header['value']
+    return ''
 
-        while start < len(full_text):
-            # Get a chunk
-            end = start + max_chunk
-            chunk = full_text[start:end]
-            
-            # Try to break at word boundary
-            if end < len(full_text):
-                last_space = chunk.rfind(' ')
-                if last_space > max_chunk - 50:
-                    end = start + last_space
-                    chunk = full_text[start:end]
-            
-            chunks.append(chunk.strip())
-            start = end
+def remove_hidden_blocks(html: str) -> str:
+    # Remove <div> or <span> blocks with display:none or visibility:hidden
+    pattern = r'<(div|span)[^>]*style=["\'][^"\'>]*(display\s*:\s*none|visibility\s*:\s*hidden)[^"\'>]*["\'][^>]*>.*?</\1>'
+    cleaned_html = re.sub(pattern, '', html, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned_html
 
-        # Post as thread
-        # First post
-        try:
-            root_post = client.send_post(text=chunks[0])
+service = get_gmail_service()
+aliases = load_alias_mappings()
+inbox_messages = fetch_messages_by_label(service, 'INBOX')
 
-            # Reply to first post with remaining chunks
-            parent_ref = models.create_strong_ref(root_post)
-            for chunk in chunks[1:]:
-                time.sleep(5) # wait 5 seconds between posts
-                reply_to = models.AppBskyFeedPost.ReplyRef(parent=parent_ref, root=parent_ref)
-                parent_post = client.send_post(text=chunk, reply_to=reply_to)
-                parent_ref = models.create_strong_ref(parent_post)
+for message in inbox_messages:
+    full_message = service.users().messages().get(userId='me', id=message['id'], format='full').execute()
+    
+    # check recipient against .env, if match found, post to bluesky
+    recipient: str = get_recipient(full_message)
+    if recipient in aliases:
+        handle = aliases[recipient]["handle"]
+        password = aliases[recipient]["password"]
 
-            print(f"✓ Posted thread with {len(chunks)} parts to {config['handle']}")
-            save_processed_id(email_id_str)
-
-        except Exception as e:
-            print(f"✗ Failed to post: {e}")
+        # post to bluesky
+        # get subject and body
+        subject: str = get_subject(full_message)
+        sender: str = get_sender(full_message)
+        body = "\n".join(extract_all_text_parts(full_message['payload'], recipient))
+        success = post_to_bluesky(handle, password, sender, subject, body)
+        if not success:
+            print("✗ Failed to post to Bluesky")
+        
+        # archive (remove inbox label)
+        service.users().messages().modify(userId='me', id=message['id'],body={'removeLabelIds': ['INBOX']}).execute()
+    
     else:
         print("→ Skipping (no matching alias)")
-
-mail.close()
-mail.logout()
+        # archive? Not sure...
