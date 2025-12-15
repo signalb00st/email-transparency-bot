@@ -2,6 +2,7 @@
 .env
 config.json
 credentials.json
+token.pickle
 
 # Project-specific stuff
 images/
