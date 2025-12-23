@@ -30,6 +30,9 @@ jobs:
         run: printf '%s' "$CREDENTIALS_JSON" > credentials.json
         env:
           CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}
+      - name: Decode TOKEN_PICKLE from base64
+        run: echo "$TOKEN_PICKLE" | base64 --decode > token.pickle
+        shell: bash
       - name: Run bot
         env:
           # Add your secrets in GitHub repo settings and reference them here
@@ -37,7 +40,6 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           # ...add other needed env vars...
         run: python bot.py
-
       - name: Upload bot.log as artifact
         uses: actions/upload-artifact@v4
         with:
