@@ -1,0 +1,46 @@
+name: Run Email Transparency Bot
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # Runs every 10 minutes
+  workflow_dispatch:        # Allows manual runs
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      - name: Install dependencies
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Write credentials.json
+        run: printf '%s' "$CREDENTIALS_JSON" > credentials.json
+        env:
+          CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}
+      - name: Run bot
+        env:
+          # Add your secrets in GitHub repo settings and reference them here
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          # ...add other needed env vars...
+        run: python bot.py
+
+      - name: Upload bot.log as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-logs
+          path: bot.log
+
