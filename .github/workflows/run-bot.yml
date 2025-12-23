@@ -40,6 +40,9 @@ jobs:
           # Add your secrets in GitHub repo settings and reference them here
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          ALIAS_JON_OSSOFF: ${{ secrets.ALIAS_JON_OSSOFF }}
+          ALIAS_BUDDY_CARTER: ${{ secrets.ALIAS_BUDDY_CARTER }}
+          ALIAS_ACTBLUE_FOR_JON: ${{ secrets.ALIAS_ACTBLUE_FOR_JON }}
           # ...add other needed env vars...
         run: python bot.py
       - name: Upload bot.log as artifact
